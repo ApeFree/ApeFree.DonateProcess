@@ -1,3 +1,4 @@
+using ApeFree.DonateProcess.Contracts;
 using System;
 using System.Collections.Generic;
 
@@ -8,18 +9,46 @@ namespace ApeFree.DonateProcess.Slave
     /// </summary>
     public class ProcessSlaveOptions
     {
+        private bool _useP2P;
+
+        /// <summary>
+        /// 网络传输模式（默认 Connect 主动拨号连入 Master，可设为 Listen 服务端监听，或 P2P 中继）
+        /// </summary>
+        public NetworkTransportMode TransportMode { get; set; } = NetworkTransportMode.Connect;
+
+        /// <summary>
+        /// 当处于 Listen 模式时，本地监听绑定的主机 IP 或域名（默认 "0.0.0.0" 监听所有网卡）
+        /// </summary>
+        public string ListenHost { get; set; } = "0.0.0.0";
+
+        /// <summary>
+        /// 当处于 Listen 模式时，本地监听端口（默认 9822）
+        /// </summary>
+        public int ListenPort { get; set; } = 9822;
+
         /// <summary>
         /// 是否使用 P2P 模式（Libp2p 穿透与去中心化传输）
         /// </summary>
-        public bool UseP2P { get; set; } = false;
+        public bool UseP2P
+        {
+            get => _useP2P || TransportMode == NetworkTransportMode.P2P;
+            set
+            {
+                _useP2P = value;
+                if (value)
+                {
+                    TransportMode = NetworkTransportMode.P2P;
+                }
+            }
+        }
 
         /// <summary>
-        /// Master 端主机地址（TCP 模式下有效，例如 "127.0.0.1"）
+        /// Master 端主机地址（Connect 模式下有效，例如 "127.0.0.1"）
         /// </summary>
         public string TargetHost { get; set; } = "127.0.0.1";
 
         /// <summary>
-        /// Master 端监听端口（TCP 模式下有效，默认 9822）
+        /// Master 端监听端口（Connect 模式下有效，默认 9822）
         /// </summary>
         public int TargetPort { get; set; } = 9822;
 
@@ -74,7 +103,7 @@ namespace ApeFree.DonateProcess.Slave
         public bool EnableDht { get; set; } = true;
 
         /// <summary>
-        /// 是否开启局域网组播发现 (mDNS)
+        /// 是否开启局域网发现 (mDNS)
         /// </summary>
         public bool EnableMdns { get; set; } = true;
 
@@ -82,10 +111,5 @@ namespace ApeFree.DonateProcess.Slave
         /// 是否启用 QUIC 传输
         /// </summary>
         public bool EnableQuic { get; set; } = false;
-
-        /// <summary>
-        /// 节点显示别名
-        /// </summary>
-        public string? NodeName { get; set; }
     }
 }

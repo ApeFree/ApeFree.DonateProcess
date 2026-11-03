@@ -28,6 +28,7 @@
   <ItemGroup>
     <ProjectReference Include="..\ApeFree.DonateProcess\ApeFree.DonateProcess.csproj" />
     <ProjectReference Include="..\ApeFree.DonateProcess.WinSlaveCli\ApeFree.DonateProcess.WinSlaveCli.csproj" />
+    <ProjectReference Include="..\..\..\ApeFree.PyramidMenu\src\ApeFree.PyramidMenu\ApeFree.PyramidMenu.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -40,6 +41,7 @@
     <TrimmerRootAssembly Include="ApeFree.DonateProcess" />
     <TrimmerRootAssembly Include="ApeFree.DonateProcess.WinSlaveCli" />
     <TrimmerRootAssembly Include="ApeFree.DonateProcess.WinCli" />
+    <TrimmerRootAssembly Include="ApeFree.PyramidMenu" />
     <TrimmerRootAssembly Include="ApeFree.ApeRpc" />
     <TrimmerRootAssembly Include="ApeFree.ApeRpc.BytesIO" />
     <TrimmerRootAssembly Include="STTech.BytesIO" />

@@ -2,6 +2,8 @@ using ApeFree.DonateProcess.Common;
 using ApeFree.DonateProcess.Contracts;
 using ApeFree.DonateProcess.Core;
 using ApeFree.DonateProcess.Master;
+using ApeFree.DonateProcess.Slave;
+using ApeFree.DonateProcess.WinCli.Common;
 using STTech.BytesIO.P2P;
 using System;
 using System.Collections.Generic;
@@ -30,7 +32,13 @@ namespace ApeFree.DonateProcess.WinCli
             var appVersion = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.1.0.0";
             Console.Title = $"ApeFree.DonateProcess.WinCli v{appVersion} - 远程进程管理工具";
 
-            if (args.Any(a => a.Equals("--help", StringComparison.OrdinalIgnoreCase) || a.Equals("-?", StringComparison.OrdinalIgnoreCase) || (a.Equals("-h", StringComparison.OrdinalIgnoreCase) && !args.Any(x => x.Equals("-s", StringComparison.OrdinalIgnoreCase) || x.Equals("--slave", StringComparison.OrdinalIgnoreCase)))))
+            if (args.Any(a => a.Equals("--help", StringComparison.OrdinalIgnoreCase) ||
+                              a.Equals("-?", StringComparison.OrdinalIgnoreCase) ||
+                              (a.Equals("-h", StringComparison.OrdinalIgnoreCase) && !args.Any(x => x.Equals("-s", StringComparison.OrdinalIgnoreCase) ||
+                                                                                                    x.Equals("--slave", StringComparison.OrdinalIgnoreCase) ||
+                                                                                                    x.Equals("-m", StringComparison.OrdinalIgnoreCase) ||
+                                                                                                    x.Equals("--master", StringComparison.OrdinalIgnoreCase) ||
+                                                                                                    x.Equals("--target", StringComparison.OrdinalIgnoreCase)))))
             {
                 PrintOverallHelp();
                 return 0;
@@ -39,27 +47,42 @@ namespace ApeFree.DonateProcess.WinCli
             var isP2P = args.Any(a => a.Equals("-p2p", StringComparison.OrdinalIgnoreCase) || a.Equals("--p2p", StringComparison.OrdinalIgnoreCase));
             var mode = DetectMode(args, out var filteredArgs);
 
+            // 无参时拉起基于 ApeFree.PyramidMenu 的交互式分层向导
+            if (mode == RunMode.None && filteredArgs.Length == 0 && !isP2P)
+            {
+                var wizardResult = DonateProcessMenuWizard.Run();
+                if (wizardResult == null)
+                {
+                    return 0;
+                }
+
+                return wizardResult.Mode switch
+                {
+                    WizardRunMode.Master => await RunMasterWithOptionsAsync(wizardResult.MasterOptions!, appVersion),
+                    WizardRunMode.Slave => await RunSlaveWithOptionsAsync(wizardResult.SlaveOptions!, appVersion),
+                    WizardRunMode.P2PServer => await RunP2PServerWithOptionsAsync(wizardResult.P2PServerPort, "0.0.0.0", null, appVersion),
+                    WizardRunMode.Local => await RunLocalAsync(Array.Empty<string>(), appVersion),
+                    _ => 0
+                };
+            }
+
+            // 若带有参数但未显式指定模式，默认以 Master 模式运行
             if (mode == RunMode.None)
             {
-                PrintMainBanner(appVersion);
-                mode = PromptInteractiveMode();
-                if (mode == RunMode.None)
-                {
-                    return 1;
-                }
+                mode = RunMode.Master;
             }
 
             return mode switch
             {
-                RunMode.Master => await RunMasterAsync(filteredArgs, appVersion, isP2P),
-                RunMode.Slave => await RunSlaveAsync(filteredArgs, appVersion, isP2P),
-                RunMode.P2PServer => await RunP2PServerAsync(filteredArgs, appVersion),
+                RunMode.Master => await RunMasterFromArgsAsync(filteredArgs, appVersion, isP2P),
+                RunMode.Slave => await RunSlaveFromArgsAsync(filteredArgs, appVersion, isP2P),
+                RunMode.P2PServer => await RunP2PServerFromArgsAsync(filteredArgs, appVersion),
                 RunMode.Local => await RunLocalAsync(filteredArgs, appVersion),
                 _ => 1
             };
         }
 
-        #region 模式检测与交互选择
+        #region 模式检测与帮助说明
 
         private static RunMode DetectMode(string[] args, out string[] remainingArgs)
         {
@@ -87,7 +110,7 @@ namespace ApeFree.DonateProcess.WinCli
                     argList.RemoveAt(i);
                     break;
                 }
-                else if (arg == "-l" || arg == "--local")
+                else if (arg == "--local" || arg == "-local")
                 {
                     mode = RunMode.Local;
                     argList.RemoveAt(i);
@@ -97,28 +120,6 @@ namespace ApeFree.DonateProcess.WinCli
 
             remainingArgs = argList.ToArray();
             return mode;
-        }
-
-        private static RunMode PromptInteractiveMode()
-        {
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine("=================== 请选择运行模式 ===================");
-            Console.ResetColor();
-            Console.WriteLine("  1. Master 远程控制端 (通过 TCP / P2P 连接 Slave 并管理远程进程与执行会话)");
-            Console.WriteLine("  2. Slave 节点端      (作为共享节点，将本机进程执行与多轮会话能力共享给 Master)");
-            Console.WriteLine("  3. P2P 中继服务端    (作为公网节点提供 Libp2p 路由与双向数据流中继转发)");
-            Console.WriteLine("  4. 本地单机控制台    (无需网络直接管理本机进程、连续多轮 CMD、PowerShell)");
-            Console.WriteLine("======================================================");
-            Console.Write("请输入选项 (1/2/3/4, 默认 1): ");
-            var input = Console.ReadLine()?.Trim();
-
-            return input switch
-            {
-                "2" => RunMode.Slave,
-                "3" => RunMode.P2PServer,
-                "4" => RunMode.Local,
-                _ => RunMode.Master
-            };
         }
 
         private static void PrintMainBanner(string version)
@@ -140,27 +141,39 @@ namespace ApeFree.DonateProcess.WinCli
   -m, --master              以 Master 远程管理端模式运行 (默认)
   -s, --slave               以 Slave 共享端模式运行
   --p2p-server              以 P2P 引导与中继服务器模式运行
-  -l, --local               以本地单机进程交互控制台模式运行
+  --local                   以本地单机进程交互控制台模式运行
 
-常用选项:
+网络传输选项:
+  -h, --host <主机>         指定目标主机 (Master/Slave 指定该参数将推断为 Connect 主动连接)
+  -p, --port <端口>         指定网络通信端口 (默认 9822)
+  -l, --listen              强制作为 Server 监听本地端口等待连入
+  -c, --connect             强制作为 Client 主动连接目标主机
+  -i, --ip <监听地址>       指定本地监听绑定地址 (默认 0.0.0.0)
+
+P2P 选项:
   -p2p, --p2p               启用 P2P (Libp2p) 去中心化中继穿透
   --server <地址>           指定 P2P 服务端地址 (例如 127.0.0.1:9832)
-  -p, --port <端口>         指定网络通信端口
-  -h, --host <主机>         指定连接目标主机或监听地址
+  --seed <种子>             指定节点身份种子 (可选)
+
+其他选项:
   --help, -h                显示帮助说明
 
 示例:
-  # Master 端通过 P2P 中继连接 Slave
-  ApeFree.DonateProcess.WinCli.exe -m -p2p --server 127.0.0.1:9832
+  # 1. 反向受控模式 (传统反向): Master 监听 9822 端口，等待受控 Slave 拨号连入
+  ApeFree.DonateProcess.WinCli.exe -m -l -p 9822
+  ApeFree.DonateProcess.WinSlaveCli.exe -h 192.168.1.100 -p 9822
 
-  # Slave 端通过 P2P 中继分享本机进程能力
+  # 2. 正向直连模式 (正向控制): Slave 开放 9822 端口，Master 主动直连受控端
+  ApeFree.DonateProcess.WinSlaveCli.exe -l -p 9822
+  ApeFree.DonateProcess.WinCli.exe -h 192.168.1.100 -p 9822
+
+  # 3. P2P 中继穿透模式
+  ApeFree.DonateProcess.WinCli.exe --p2p-server -p 9832
+  ApeFree.DonateProcess.WinCli.exe -m -p2p --server 127.0.0.1:9832
   ApeFree.DonateProcess.WinCli.exe -s -p2p --server 127.0.0.1:9832
 
-  # 启动公网 P2P 中继服务端
-  ApeFree.DonateProcess.WinCli.exe --p2p-server -p 9832
-
-  # 启动本地单机进程与连续 CMD 交互控制台
-  ApeFree.DonateProcess.WinCli.exe -l
+  # 4. 本地单机控制台
+  ApeFree.DonateProcess.WinCli.exe --local
 ");
         }
 
@@ -168,12 +181,17 @@ namespace ApeFree.DonateProcess.WinCli
 
         #region Master 运行逻辑
 
-        private static async Task<int> RunMasterAsync(string[] args, string appVersion, bool isP2P)
+        private static async Task<int> RunMasterFromArgsAsync(string[] args, string appVersion, bool isP2P)
         {
-            Console.Title = $"ApeFree.DonateProcess.WinCli v{appVersion} - [Master 远程控制端]";
-            PrintMainBanner(appVersion);
+            var options = ParseMasterArguments(args, isP2P);
+            return await RunMasterWithOptionsAsync(options, appVersion);
+        }
 
+        private static ProcessMasterOptions ParseMasterArguments(string[] args, bool isP2P)
+        {
             var options = new ProcessMasterOptions { UseP2P = isP2P };
+            bool isExplicitConnect = false;
+            bool isExplicitListen = false;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -186,10 +204,64 @@ namespace ApeFree.DonateProcess.WinCli
                 else if ((arg == "-p" || arg == "--port") && i + 1 < args.Length && int.TryParse(args[++i], out var p))
                 {
                     options.ListenPort = p;
+                    options.TargetPort = p;
                 }
-                else if ((arg == "-h" || arg == "--host") && i + 1 < args.Length)
+                else if ((arg == "-h" || arg == "--host" || arg == "-target" || arg == "--target") && i + 1 < args.Length)
+                {
+                    options.TargetHost = args[++i];
+                    isExplicitConnect = true;
+                }
+                else if ((arg == "-i" || arg == "--ip" || arg == "--listen-host") && i + 1 < args.Length)
                 {
                     options.ListenHost = args[++i];
+                }
+                else if (arg == "-l" || arg == "--listen")
+                {
+                    isExplicitListen = true;
+                }
+                else if (arg == "-c" || arg == "--connect")
+                {
+                    isExplicitConnect = true;
+                }
+                else if ((arg == "--master-seed" || arg == "--seed") && i + 1 < args.Length)
+                {
+                    options.MasterSeed = args[++i];
+                    options.UseP2P = true;
+                }
+                else if (arg == "--server-peer" && i + 1 < args.Length)
+                {
+                    options.ServerPeerId = args[++i];
+                    options.UseP2P = true;
+                }
+                else if (arg == "--server-seed" && i + 1 < args.Length)
+                {
+                    options.ServerSeed = args[++i];
+                    options.UseP2P = true;
+                }
+            }
+
+            if (options.UseP2P)
+            {
+                options.TransportMode = NetworkTransportMode.P2P;
+            }
+            else if (isExplicitConnect)
+            {
+                options.TransportMode = NetworkTransportMode.Connect;
+            }
+            else if (isExplicitListen)
+            {
+                options.TransportMode = NetworkTransportMode.Listen;
+            }
+            else
+            {
+                // 智能推断：如果指定了目标主机 (且非 0.0.0.0)，推断为 Connect；否则默认为 Listen
+                if (!string.IsNullOrWhiteSpace(options.TargetHost) && options.TargetHost != "0.0.0.0")
+                {
+                    options.TransportMode = NetworkTransportMode.Connect;
+                }
+                else
+                {
+                    options.TransportMode = NetworkTransportMode.Listen;
                 }
             }
 
@@ -199,6 +271,14 @@ namespace ApeFree.DonateProcess.WinCli
                 var srv = Console.ReadLine()?.Trim();
                 options.P2PServerAddress = string.IsNullOrWhiteSpace(srv) ? "127.0.0.1:9832" : srv;
             }
+
+            return options;
+        }
+
+        private static async Task<int> RunMasterWithOptionsAsync(ProcessMasterOptions options, string appVersion)
+        {
+            Console.Title = $"ApeFree.DonateProcess.WinCli v{appVersion} - [Master 远程控制端]";
+            PrintMainBanner(appVersion);
 
             using var masterNode = new ProcessMasterNode(options);
 
@@ -214,18 +294,36 @@ namespace ApeFree.DonateProcess.WinCli
                 Console.ResetColor();
             };
 
+            masterNode.SlaveConnected += (s, service) =>
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("\n[+] 远端 Slave 节点已连接并就绪！");
+                Console.ResetColor();
+            };
+
+            masterNode.SlaveDisconnected += (s, e) =>
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("\n[-] 与远端 Slave 节点的连接已断开，正在后台持续自动重连 ...");
+                Console.ResetColor();
+            };
+
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;
             Console.WriteLine("==> 正在启动 Master 控制端 ...");
             Console.ResetColor();
 
-            if (options.UseP2P)
+            if (options.TransportMode == NetworkTransportMode.P2P)
             {
                 Console.WriteLine($"    模式: P2P 去中心化中继 (中继服务器: {options.P2PServerAddress})");
             }
+            else if (options.TransportMode == NetworkTransportMode.Connect)
+            {
+                Console.WriteLine($"    模式: TCP 主动拨号连接目标 Slave ({options.TargetHost}:{options.TargetPort})");
+            }
             else
             {
-                Console.WriteLine($"    模式: TCP 监听端口 {options.ListenPort}");
+                Console.WriteLine($"    模式: TCP 本地服务端监听 (端口: {options.ListenPort})");
             }
 
             using var cts = new CancellationTokenSource();
@@ -237,18 +335,31 @@ namespace ApeFree.DonateProcess.WinCli
 
             await masterNode.StartAsync(cts.Token);
 
-            if (options.UseP2P && !string.IsNullOrWhiteSpace(masterNode.LocalPeerId))
+            if (options.TransportMode == NetworkTransportMode.P2P && !string.IsNullOrWhiteSpace(masterNode.LocalPeerId))
             {
                 Console.WriteLine($"    Master PeerId: {masterNode.LocalPeerId}");
             }
 
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("[*] 正在等待 Slave 节点接入 ...");
-            Console.ResetColor();
+            if (options.TransportMode == NetworkTransportMode.Connect)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[*] 正在主动连接目标 Slave ({options.TargetHost}:{options.TargetPort}) ...");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("[*] 正在等待 Slave 节点接入 ...");
+                Console.ResetColor();
+            }
 
             while (!masterNode.HasActiveSlave && !cts.IsCancellationRequested)
             {
-                await Task.Delay(500);
+                try
+                {
+                    await Task.Delay(500, cts.Token);
+                }
+                catch (OperationCanceledException) { }
             }
 
             if (cts.IsCancellationRequested) return 0;
@@ -259,6 +370,20 @@ namespace ApeFree.DonateProcess.WinCli
 
             await RunInteractiveDashboardAsync(masterNode.RemoteService!, isRemote: true, cts.Token);
             return 0;
+        }
+
+        #endregion
+
+        #region Slave 运行逻辑
+
+        private static async Task<int> RunSlaveFromArgsAsync(string[] args, string appVersion, bool isP2P)
+        {
+            return await ApeFree.DonateProcess.WinSlaveCli.Program.RunAsync(args, appVersion, isP2P);
+        }
+
+        private static async Task<int> RunSlaveWithOptionsAsync(ProcessSlaveOptions options, string appVersion)
+        {
+            return await ApeFree.DonateProcess.WinSlaveCli.Program.RunWithOptionsAsync(options, appVersion);
         }
 
         #endregion
@@ -288,22 +413,10 @@ namespace ApeFree.DonateProcess.WinCli
 
         #endregion
 
-        #region Slave 运行逻辑
-
-        private static async Task<int> RunSlaveAsync(string[] args, string appVersion, bool isP2P)
-        {
-            return await ApeFree.DonateProcess.WinSlaveCli.Program.RunAsync(args, appVersion, isP2P);
-        }
-
-        #endregion
-
         #region P2P 服务端运行逻辑
 
-        private static async Task<int> RunP2PServerAsync(string[] args, string appVersion)
+        private static async Task<int> RunP2PServerFromArgsAsync(string[] args, string appVersion)
         {
-            Console.Title = $"ApeFree.DonateProcess.WinCli v{appVersion} - [P2P 服务端] 引导与数据中继节点";
-            PrintMainBanner(appVersion);
-
             string host = "0.0.0.0";
             int port = 9832;
             string? seed = null;
@@ -324,6 +437,14 @@ namespace ApeFree.DonateProcess.WinCli
                     seed = args[++i];
                 }
             }
+
+            return await RunP2PServerWithOptionsAsync(port, host, seed, appVersion);
+        }
+
+        private static async Task<int> RunP2PServerWithOptionsAsync(int port, string host, string? seed, string appVersion)
+        {
+            Console.Title = $"ApeFree.DonateProcess.WinCli v{appVersion} - [P2P 服务端] 引导与数据中继节点";
+            PrintMainBanner(appVersion);
 
             Console.WriteLine();
             Console.ForegroundColor = ConsoleColor.Cyan;

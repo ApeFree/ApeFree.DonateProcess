@@ -1,4 +1,5 @@
 using ApeFree.DonateProcess.Common;
+using ApeFree.DonateProcess.Contracts;
 using ApeFree.DonateProcess.Slave;
 using System;
 using System.Linq;
@@ -36,9 +37,15 @@ namespace ApeFree.DonateProcess.WinSlaveCli
             }
             if (isP2P)
             {
+                options.TransportMode = NetworkTransportMode.P2P;
                 options.UseP2P = true;
             }
 
+            return await RunWithOptionsAsync(options, appVersion);
+        }
+
+        public static async Task<int> RunWithOptionsAsync(ProcessSlaveOptions options, string appVersion)
+        {
             using var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (s, e) =>
             {
@@ -51,7 +58,7 @@ namespace ApeFree.DonateProcess.WinSlaveCli
             Console.WriteLine("==> 正在启动 Slave 进程管理共享节点 ...");
             Console.ResetColor();
 
-            if (options.UseP2P)
+            if (options.TransportMode == NetworkTransportMode.P2P)
             {
                 Console.WriteLine($"    模式: P2P (Libp2p 去中心化中继穿透)");
                 if (!string.IsNullOrWhiteSpace(options.P2PServerAddress))
@@ -59,9 +66,15 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                     Console.WriteLine($"    P2P 中继服务器: {options.P2PServerAddress}");
                 }
             }
+            else if (options.TransportMode == NetworkTransportMode.Listen)
+            {
+                Console.WriteLine($"    模式: TCP 本地服务端监听 (正向受控服务)");
+                Console.WriteLine($"    监听地址: {options.ListenHost}:{options.ListenPort}");
+                Console.WriteLine($"    多端并发: 完全允许");
+            }
             else
             {
-                Console.WriteLine($"    模式: TCP 直连");
+                Console.WriteLine($"    模式: TCP 主动连出 (反向穿透模式)");
                 Console.WriteLine($"    目标 Master 地址: {options.TargetHost}:{options.TargetPort}");
             }
 
@@ -81,11 +94,27 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                 Console.ResetColor();
             };
 
+            slaveNode.ClientConnected += (s, client) =>
+            {
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine($"\n[+] Master 客户端已接入: {client} (当前在线 Master 数: {slaveNode.ConnectedClientCount})");
+                Console.ResetColor();
+            };
+
+            slaveNode.ClientDisconnected += (s, client) =>
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"\n[-] Master 客户端已断开: {client} (当前在线 Master 数: {slaveNode.ConnectedClientCount})");
+                Console.ResetColor();
+            };
+
             var initialSuccess = await slaveNode.StartAsync(cts.Token);
             if (initialSuccess)
             {
                 Console.ForegroundColor = ConsoleColor.Green;
-                Console.WriteLine("[+] 初始连接成功。");
+                Console.WriteLine(options.TransportMode == NetworkTransportMode.Listen
+                    ? "[+] 服务端监听已就绪，正在等待 Master 客户端接入 ..."
+                    : "[+] 初始连接成功。");
                 Console.ResetColor();
             }
             else
@@ -95,7 +124,7 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                 Console.ResetColor();
             }
 
-            if (options.UseP2P && !string.IsNullOrWhiteSpace(slaveNode.LocalPeerId))
+            if (options.TransportMode == NetworkTransportMode.P2P && !string.IsNullOrWhiteSpace(slaveNode.LocalPeerId))
             {
                 Console.WriteLine($"    本机 PeerId: {slaveNode.LocalPeerId}");
             }
@@ -129,20 +158,27 @@ namespace ApeFree.DonateProcess.WinSlaveCli
             Console.WriteLine(@"用法:
   ApeFree.DonateProcess.WinSlaveCli.exe [选项]
 
-选项:
+网络模式选项:
+  -c, --connect             作为客户端主动连入 Master（默认模式）
+  -l, --listen              作为服务端被动监听（正向受控模式，等待 Master 连入）
+  -h, --host <主机>         Master 端 IP 地址或域名 (默认: 127.0.0.1)
+  -p, --port <端口>         通信端口或本地监听端口 (默认 TCP: 9822, P2P: 9832)
+
+P2P 选项:
   -p2p, --p2p               启用 P2P (Libp2p) 去中心化中继穿透模式
   --server <地址>           公网 P2P 引导与中继服务器地址 (例如: 127.0.0.1:9832)
-  -h, --host <主机>         Master 端 IP 地址或域名 (默认: 127.0.0.1)
-  -p, --port <端口>         Master 端端口 (默认 TCP: 9822, P2P: 9832)
   --seed <口令>             本地节点私钥派生种子 (确保生成固定 PeerId)
   --master-seed <口令>      目标 Master 节点公钥派生种子
   --help, -h                显示帮助信息
 
 示例:
-  # TCP 直连模式接入 Master
-  ApeFree.DonateProcess.WinSlaveCli.exe -h 192.168.1.100 -p 9822
+  # 模式 A: 反向穿透模式 (主动连向 Master)
+  ApeFree.DonateProcess.WinSlaveCli.exe -c -h 192.168.1.100 -p 9822
 
-  # P2P 穿透中继模式接入 Master
+  # 模式 B: 正向受控服务模式 (本地监听等待 Master 接入，支持多 Master 并发)
+  ApeFree.DonateProcess.WinSlaveCli.exe -l -p 9822
+
+  # 模式 C: P2P 穿透中继模式
   ApeFree.DonateProcess.WinSlaveCli.exe -p2p --server 127.0.0.1:9832
 ");
         }
@@ -152,12 +188,23 @@ namespace ApeFree.DonateProcess.WinSlaveCli
             if (args.Length == 0) return null;
 
             var options = new ProcessSlaveOptions();
+            bool isExplicitListen = false;
+            bool isExplicitConnect = false;
+
             for (int i = 0; i < args.Length; i++)
             {
                 var arg = args[i].ToLowerInvariant();
                 if (arg == "-p2p" || arg == "--p2p")
                 {
                     options.UseP2P = true;
+                }
+                else if (arg == "-l" || arg == "--listen")
+                {
+                    isExplicitListen = true;
+                }
+                else if (arg == "-c" || arg == "--connect")
+                {
+                    isExplicitConnect = true;
                 }
                 else if ((arg == "--server" || arg == "-server") && i + 1 < args.Length)
                 {
@@ -167,10 +214,12 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                 else if ((arg == "-h" || arg == "--host") && i + 1 < args.Length)
                 {
                     options.TargetHost = args[++i];
+                    options.ListenHost = options.TargetHost;
                 }
                 else if ((arg == "-p" || arg == "--port") && i + 1 < args.Length && int.TryParse(args[++i], out var p))
                 {
                     options.TargetPort = p;
+                    options.ListenPort = p;
                 }
                 else if (arg == "--seed" && i + 1 < args.Length)
                 {
@@ -182,6 +231,19 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                 }
             }
 
+            if (options.UseP2P)
+            {
+                options.TransportMode = NetworkTransportMode.P2P;
+            }
+            else if (isExplicitListen && !isExplicitConnect)
+            {
+                options.TransportMode = NetworkTransportMode.Listen;
+            }
+            else
+            {
+                options.TransportMode = NetworkTransportMode.Connect;
+            }
+
             return options;
         }
 
@@ -190,13 +252,31 @@ namespace ApeFree.DonateProcess.WinSlaveCli
             var options = new ProcessSlaveOptions();
 
             Console.WriteLine("请选择网络连接模式：");
-            Console.WriteLine("  1. P2P 中继穿透模式 (跨内网/NAT 穿透推荐，默认)");
-            Console.WriteLine("  2. TCP 直连模式 (局域网或 Master 具备公网 IP)");
-            Console.Write("请输入选项 (1/2, 默认 1): ");
+            Console.WriteLine("  1. 主动拨号连入 Master (反向穿透模式，默认)");
+            Console.WriteLine("  2. 服务端本地监听 (正向受控服务，等待 Master 连入)");
+            Console.WriteLine("  3. P2P 中继穿透模式 (通过公网 Relay 节点打通)");
+            Console.Write("请输入选项 (1/2/3, 默认 1): ");
             var choice = Console.ReadLine()?.Trim();
 
             if (choice == "2")
             {
+                options.TransportMode = NetworkTransportMode.Listen;
+                options.UseP2P = false;
+                Console.Write("请输入本地监听端口 (默认 9822): ");
+                var portStr = Console.ReadLine()?.Trim();
+                if (int.TryParse(portStr, out var port)) options.ListenPort = port;
+            }
+            else if (choice == "3")
+            {
+                options.TransportMode = NetworkTransportMode.P2P;
+                options.UseP2P = true;
+                Console.Write("请输入 P2P 中继服务器地址 (默认 127.0.0.1:9832): ");
+                var srv = Console.ReadLine()?.Trim();
+                options.P2PServerAddress = string.IsNullOrWhiteSpace(srv) ? "127.0.0.1:9832" : srv;
+            }
+            else
+            {
+                options.TransportMode = NetworkTransportMode.Connect;
                 options.UseP2P = false;
                 Console.Write("请输入 Master 端主机 IP (默认 127.0.0.1): ");
                 var host = Console.ReadLine()?.Trim();
@@ -205,13 +285,6 @@ namespace ApeFree.DonateProcess.WinSlaveCli
                 Console.Write("请输入 Master 端监听端口 (默认 9822): ");
                 var portStr = Console.ReadLine()?.Trim();
                 if (int.TryParse(portStr, out var port)) options.TargetPort = port;
-            }
-            else
-            {
-                options.UseP2P = true;
-                Console.Write("请输入 P2P 中继服务器地址 (默认 127.0.0.1:9832): ");
-                var srv = Console.ReadLine()?.Trim();
-                options.P2PServerAddress = string.IsNullOrWhiteSpace(srv) ? "127.0.0.1:9832" : srv;
             }
 
             return options;

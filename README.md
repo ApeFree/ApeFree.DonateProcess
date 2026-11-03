@@ -9,10 +9,12 @@
 
 在自动化运维、跨设备集群调度及开发测试场景中，我们经常需要在局域网甚至跨多层内网 NAT 环境下远程查看目标机器的进程、终止或重启无响应服务、执行 PowerShell 脚本，或者进入一个**能连续维持上下文状态与环境变量的多轮对话交互式 CMD / PowerShell 终端**。传统方案（如 SSH、WinRM、远程桌面）往往需要配置繁重的服务端凭据、开放防火墙端口或面临公网 IP 限制。
 
-本项目参考 **ApeFree.DonateDisk** 架构，提供基于 `ApeFree.ApeRpc` 与 `STTech.BytesIO` 的反向全双工 RPC 与 Libp2p P2P 中继穿透机制：
-1. **标准 TCP 直连模式**：局域网或 Master 拥有公网 IP 环境下，Slave 主动拨号连入 Master；
-2. **P2P 去中心化中继模式 (Libp2p Circuit Relay)**：Master 与 Slave **双方均处于不同内网 NAT / 防火墙**之后，双方均无需公网 IP 和端口映射，只需**连入指定的 P2P 服务端**，即可自动建立端到端反向 RPC 通道！
-3. **本地单机控制台模式**：无需任何网络配置，直接作为本机功能完备的进程管理器与连续多轮 CMD/PowerShell 调度台使用。
+本项目参考 **ApeFree.DonateDisk** 架构，提供基于 `ApeFree.ApeRpc`、`STTech.BytesIO` 与 `ApeFree.PyramidMenu` 的**角色与网络解耦、全双工 RPC 与 Libp2p P2P 中继穿透机制**：
+1. **正向直连模式 (正向受控服务)**：受控 Slave 作为服务端开放端口监听（**支持多个 Master 客户端并发连入独立控制**），Master 端主动连接目标 Slave 机器开展调度；
+2. **反向受控模式 (传统反向穿透)**：Master 作为服务端监听端口，位于 NAT/内网的受控 Slave 机器主动拨号连入 Master；
+3. **P2P 去中心化中继模式 (Libp2p Circuit Relay)**：Master 与 Slave **双方均处于不同内网 NAT / 防火墙**之后，双方均无需公网 IP 和端口映射，只需**连入指定的 P2P 服务端**，即可自动建立端到端 RPC 通道；
+4. **PyramidMenu 交互式向导**：支持无参数启动分层菜单向导（智能默认预设，回车一键极速秒启）；
+5. **本地单机控制台模式**：无需任何网络配置，直接作为本机功能完备的进程管理器与连续多轮 CMD/PowerShell 调度台使用。
 
 ---
 
@@ -33,9 +35,10 @@
 * **⚡ PowerShell 脚本安全无损执行**：
   * 采用 UTF-16LE Base64 编码命令机制（`-EncodedCommand`），彻底避免多行脚本、单双引号、换行符及管道符号的转义错乱；
   * 完整捕获标准输出、标准错误流、ExitCode 退出码及毫秒级耗时。
-* **🌐 双向 RPC 反向穿透**：
-  * 基于 `ApeFree.ApeRpc.BytesIO` 与 `STTech.BytesIO`，Slave 端主动拨号连出，天然穿透 NAT 与防火墙；
-  * 内置断线无限自动重连与自动握手服务探测。
+* **🌐 网络与角色彻底解耦**：
+  * Master 与 Slave 均支持主动连出（Connect）与本地监听（Listen）；
+  * 无论哪端监听、哪端连入，连接建立后两端地位对等，Master 负责调度，Slave 负责执行；
+  * Slave 监听模式下支持多 Master 并发接入独立交互控制。
 * **📦 单文件修剪独立程序**：
   * `ApeFree.DonateProcess.WinCli` 与 `WinSlaveCli` 均支持单文件修剪发布（Self-Contained Single-File Trimmed），轻量免安装，即开即用。
 
@@ -43,11 +46,15 @@
 
 ## 3. 架构拓扑 (Architecture)
 
-### 3.1 标准 TCP 直连模式 (局域网 / 单向公网)
+### 3.1 正向直连与反向受控 2x2 灵活拓扑 (网络与角色解耦)
 ```
-Master (TcpServer 监听 9822) <──────[TCP 主动连入]────── Slave (TcpClient 连出)
-       │                                                      │
-ApeRpc 交互终端 (CMD / 脚本 / 进程管理)                  发布本地进程操作与会话服务
+【拓扑 A：正向直连模式 (推荐：目标受控端开放端口，支持多 Master 并发控制)】
+Master 1 (Client 主动连出) ──┐
+                             ├────[TCP 直连]────> Slave 共享节点 (TcpServer 监听 9822)
+Master 2 (Client 主动连出) ──┘                    (发布本机进程操作与多轮终端服务)
+
+【拓扑 B：反向受控模式 (目标受控端位于复杂内网，主动向 Master 反弹连接)】
+Master 控制端 (TcpServer 监听 9822) <──────[TCP 连入]────── Slave 共享端 (Client 连出)
 ```
 
 ### 3.2 P2P 去中心化中继模式 (双方均位于 NAT 内部)
@@ -79,13 +86,46 @@ ApeRpc 交互终端 (CMD / 脚本 / 进程管理)                  发布本地�
 
 ## 5. 快速上手 (Quick Start)
 
-### 5.1 方案 A：P2P 中继穿透模式 (跨内网 NAT 穿透首选)
+### 5.1 零参数交互式向导 (PyramidMenu)
+直接双击或在命令行运行程序（不带参数）：
+```bash
+ApeFree.DonateProcess.WinCli.exe
+```
+程序将拉起基于 `ApeFree.PyramidMenu` 的分层向导，按提示输入序号或直接敲回车即可秒级秒启所需服务！
 
+---
+
+### 5.2 方案 A：正向直连模式 (受控端监听，支持多客户端)
+#### 第一步：受控端开放端口监听 (正向服务)
+```bash
+ApeFree.DonateProcess.WinSlaveCli.exe -l -p 9822
+```
+
+#### 第二步：控制端主动连入
+```bash
+ApeFree.DonateProcess.WinCli.exe -h 192.168.1.100 -p 9822
+```
+
+---
+
+### 5.3 方案 B：反向受控模式 (受控端位于内网反弹连接)
+#### 第一步：控制端开放端口监听等待反弹
+```bash
+ApeFree.DonateProcess.WinCli.exe -m -l -p 9822
+```
+
+#### 第二步：受控端主动连向控制端
+```bash
+ApeFree.DonateProcess.WinSlaveCli.exe -h 192.168.1.50 -p 9822
+```
+
+---
+
+### 5.4 方案 C：P2P 中继穿透模式 (跨内网 NAT 穿透)
 #### 第一步：启动公网 P2P 引导与中继服务端 (Relay Server)
 ```bash
 ApeFree.DonateProcess.WinCli.exe --p2p-server -p 9832
 ```
-*(在具有公网 IP 的云服务器或中继节点上运行，监听 9832 端口)*
 
 #### 第二步：启动 Master 端 (远程管理控制台)
 ```bash
@@ -94,29 +134,14 @@ ApeFree.DonateProcess.WinCli.exe -m -p2p --server "127.0.0.1:9832"
 
 #### 第三步：启动 Slave 端 (本地进程共享节点)
 ```bash
-ApeFree.DonateProcess.WinCli.exe -s -p2p --server "127.0.0.1:9832"
-```
-*(或使用专用的轻量独立程序 `ApeFree.DonateProcess.WinSlaveCli.exe -p2p --server "127.0.0.1:9832"`)*
-
----
-
-### 5.2 方案 B：标准 TCP 直连模式 (局域网)
-
-#### 第一步：启动 Master 端监听端口
-```bash
-ApeFree.DonateProcess.WinCli.exe -m -p 9822
-```
-
-#### 第二步：Slave 端连接 Master
-```bash
-ApeFree.DonateProcess.WinSlaveCli.exe -h 192.168.1.100 -p 9822
+ApeFree.DonateProcess.WinSlaveCli.exe -p2p --server "127.0.0.1:9832"
 ```
 
 ---
 
-### 5.3 方案 C：本地单机控制台模式 (无需网络)
+### 5.5 方案 D：本地单机控制台模式 (无需网络)
 ```bash
-ApeFree.DonateProcess.WinCli.exe -l
+ApeFree.DonateProcess.WinCli.exe --local
 ```
 
 ---
